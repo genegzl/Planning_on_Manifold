@@ -11,28 +11,37 @@
 #include <nav_msgs/Path.h>
 
 #define print_line printf("%s -- %d\r\n", __FILE__, __LINE__);
-#define INF         1e8
-#define EPSILON     1e-8
+#define INF         1e7
+#define EPSILON     1e-7
 #define PI_2        6.28318530718f
 
 // using namespace std;
 using namespace Eigen;
 
 
-#define TRAJ_DATA_ROW                       5176
-#define TRAJ_DATA_COL                       18
+#define TRAJ_DATA_ROW                       46531
+#define TRAJ_DATA_COL                       11
 #define TRAJ_REPEAT_TICK                    0
+#define TRAJ_DATA_FS                        500
+#define TRAJ_OUPUT_FS                       50
+#define TRAJ_TS                             0.02
+#define TRAJ_CONSTANT_SPEED_START_TICK      2501
+#define TRAJ_CONSTANT_SPEED_END_TICK        40030
+#define TRAJ_MATCH_RANGE                    15
+#define CONSTANT_SPEED                      2.4
+
+
 #define ESTI_PLANE_PONIT_NUM                5
 #define SURFACE_ESTI_PONIT_NUM_MIN          20
 #define SURFACE_ESTI_PONIT_NUM_MAX          200
 #define MIN_MAP_SIZE                        2.5e4
-#define SURFACE_FITTING_THRESHOLE           100
+#define SURFACE_FITTING_THRESHOLE           0.1
 #define SURFACE_SEARCH_RANGE_FORWARD        0.75
 #define SURFACE_SEARCH_RANGE_BACK           0.75
 #define SURFACE_SEARCH_RANGE_LEFT           0.75
 #define SURFACE_SEARCH_RANGE_RIGHT          0.75
-#define SURFACE_SEARCH_RANGE_UP             0.25
-#define SURFACE_SEARCH_RANGE_DOWN           0.25
+#define SURFACE_SEARCH_RANGE_UP             0.2
+#define SURFACE_SEARCH_RANGE_DOWN           0.2
 #define LIDAR_MOUNT_HIGHT                   0.3
 
 
@@ -42,7 +51,8 @@ enum traj_mode_t
 {
     HOVER           = 10,
     TRAJ_REPEAT     = 11,
-    TRAJ_STAY       = 12
+    TRAJ_STAY       = 12,
+    TRAJ_MATCH      = 13
 };
 
 struct sys_1st_t
@@ -63,14 +73,17 @@ struct coordinate_t
     float       yaw_rate;
     float       vb;
     float       ab;
+    float       kp;     // curvature of trajectory on coordinate space
 };
 
 struct traj_t
 {
     bool                                               init_en;
     traj_mode_t                                        mode;
+    bool                                               constant_speed_enable;
     uint32_t                                           wait_cnt;
     uint32_t                                           read_cnt;
+    uint8_t                                            read_step;
 
     coordinate_t                                       coordinate;
 
@@ -105,6 +118,7 @@ struct traj_t
      Matrix<float, 6, 1>                            para;
      sys_1st_t                                      fltr[6];
      vector<PointCubeIndexType>                     neighbor_ponits;
+     vector<PointCubeIndexType>                     neighbor_ponits_selected;
      uint32_t                                       neighbor_point_num;
      vector<float>                                  Distance2Centrois;
      Vector3f                                       search_center;
@@ -160,11 +174,19 @@ public:
     nav_msgs::Path                                  motion_path;
     geometry_msgs::PoseStamped                      motion_pose;
 
+    vector<float>                                   db_p;
+    vector<float>                                   db_v;
+    vector<float>                                   db_p_integ;
+    vector<float>                                   db_v_integ;
+    vector<float>                                   db_v_norm;
+    vector<float>                                   db_time_stamp;
+
     void read_traj_in_EuclideanSpace(traj_t &traj, const traj_data_t &traj_data);
     void planning_on_manifold_main(KD_FOREST &ikdforest);
 };
 
 float gene_math_sys_run_1st(float input, sys_1st_t &sys);
 void math_butterworth_LPF_1st_config(uint8_t order, float Fc, float Ts, sys_1st_t &sys);
+uint32_t find_min_index(vector<float> &squence);
 
 #endif

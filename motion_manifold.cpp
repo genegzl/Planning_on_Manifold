@@ -53,45 +53,121 @@ void MANIFOLD::set_motion_manifold_msg()
     this->car_traj_msg.SurfaceValid = this->surface.surfaceValid;
 }
 
+uint32_t find_min_index(vector<float> &squence)
+{
+    uint32_t length, j, min_index;
+    length = squence.size();
+    min_index = 0;
+
+    for (j = 1; j < length; j++)
+    {
+        if (squence[j] < squence[min_index])
+        {
+            min_index = j;
+        }
+    }
+
+    return min_index;
+}
+
+
 void MANIFOLD::read_traj_in_EuclideanSpace(traj_t &traj, const traj_data_t &traj_data)
 {
+    
     if (traj.init_en != true)
     {
         return;
     }
 
-    memcpy(traj.coordinate.pos.data(),   &traj_data[traj.read_cnt][0], 2*sizeof(float));
-    memcpy(traj.coordinate.vel.data(),   &traj_data[traj.read_cnt][3], 2*sizeof(float));
-    memcpy(traj.coordinate.acc.data(),   &traj_data[traj.read_cnt][6], 2*sizeof(float));
-
-    traj.coordinate.vb = traj_data[traj.read_cnt][9];
-    traj.coordinate.ab = traj_data[traj.read_cnt][10];
-    traj.coordinate.yaw_rate = traj_data[traj.read_cnt][11];
-    traj.coordinate.yaw = traj_data[traj.read_cnt][12];
-
-    traj.coordinate.pos(0) += traj.pos_init(0);
-    traj.coordinate.pos(1) += traj.pos_init(1);
-
     switch (traj.mode)
     {
         case TRAJ_REPEAT:
-            traj.read_cnt ++;
+        {
+            traj.read_cnt += traj.read_step;
             if (traj.read_cnt >= TRAJ_DATA_ROW)
             {
                 traj.read_cnt = TRAJ_REPEAT_TICK;
             }
-            break;
+        }
+        break;
 
         case TRAJ_STAY:
-            if (traj.read_cnt < TRAJ_DATA_ROW-1)
+        {
+            if (traj.read_cnt < TRAJ_DATA_ROW-1-traj.read_step)
             {
-                traj.read_cnt ++;
+                traj.read_cnt += traj.read_step;
             }
-            break;
+            else
+            {
+                traj.read_cnt = TRAJ_DATA_ROW - 1;
+            }
+        }
+        break;
+
+        case TRAJ_MATCH:
+        {
+            uint32_t j, search_index;
+            float px, diff;
+            vector<float> px_sequence;
+
+            if (traj.read_cnt < (TRAJ_CONSTANT_SPEED_START_TICK - traj.read_step) 
+                || traj.read_cnt > (TRAJ_CONSTANT_SPEED_END_TICK - traj.read_step))
+            {
+                traj.constant_speed_enable = false;
+                traj.read_cnt += traj.read_step;
+            }
+            else
+            {
+                traj.constant_speed_enable = true;
+
+                px = traj.coordinate.pos(0) + traj.vel(0) * TRAJ_TS + 0.5f * traj.acc(0) * TRAJ_TS * TRAJ_TS - traj.pos_init(0);               
+                for (j = 1; j <= TRAJ_MATCH_RANGE; j++)
+                {
+                    diff = fabs(traj_data[traj.read_cnt + j][0] - px);
+                    px_sequence.push_back(diff);
+                }
+                search_index = find_min_index(px_sequence);
+
+                // cout << "px: " << px << endl;
+                // cout << "read_cnt: " << traj.read_cnt << endl;
+                // cout << "vector size: " << px_sequence.size() << endl;
+                // cout << "search index: " << search_index << endl;
+                // cout << "search_list: " << endl;
+                // for (j = 1; j <= px_sequence.size(); j++)
+                // {
+                //     cout << j << ", " << traj_data[traj.read_cnt + j][0] << ", " << px_sequence[j-1] << endl;
+                // }
+
+                traj.read_cnt += (search_index + 1);
+                px_sequence.clear();
+            }
+
+            if (traj.read_cnt > TRAJ_DATA_ROW-1)
+            {
+                traj.read_cnt = TRAJ_DATA_ROW - 1;
+            }
+
+            
+        }   
+        break;
 
         default:
-            break;
+        break;
     }
+
+    memcpy(traj.coordinate.pos.data(),   &traj_data[traj.read_cnt][0], 2*sizeof(float));
+    memcpy(traj.coordinate.vel.data(),   &traj_data[traj.read_cnt][2], 2*sizeof(float));
+    memcpy(traj.coordinate.acc.data(),   &traj_data[traj.read_cnt][4], 2*sizeof(float));
+
+    traj.coordinate.vb = traj_data[traj.read_cnt][6];
+    traj.coordinate.ab = traj_data[traj.read_cnt][7];
+    traj.coordinate.yaw_rate = traj_data[traj.read_cnt][8];
+    traj.coordinate.yaw = traj_data[traj.read_cnt][9];
+    traj.coordinate.kp = traj_data[traj.read_cnt][10];
+
+    traj.coordinate.pos(0) += traj.pos_init(0);
+    traj.coordinate.pos(1) += traj.pos_init(1);
+
 }
 
 /* comment
@@ -217,10 +293,10 @@ bool MANIFOLD::surface_estimate(quadradic_surface_t &surface, float threshold)
     }
     else
     { 
-        // for (int j = 0; j < 6; j++)
-        // {
-        //     surface.para[j] = gene_math_sys_run_1st(para_candidate[j], surface.fltr[j]);
-        // }
+        for (int j = 0; j < 6; j++)
+        {
+            surface.para[j] = gene_math_sys_run_1st(para_candidate[j], surface.fltr[j]);
+        }
         surface.para = para_candidate;
     }
 
@@ -235,7 +311,7 @@ void MANIFOLD::surface_coordinate_to_traj_on_manifold(quadradic_surface_t &surfa
 {
     coordinate_t *cdn = &traj.coordinate;
     Matrix<float, 6,1> para = surface.para;
-    Vector3f Bx, By;
+    float v_norm, w, tmp1, tmp2, tmp0;
 
     if (surface.surfaceValid != true)
     {
@@ -250,38 +326,88 @@ void MANIFOLD::surface_coordinate_to_traj_on_manifold(quadradic_surface_t &surfa
     }
     else
     {
-        /* 1. postion */
-        traj.pos.block<2,1>(0,0) = cdn->pos;
-        traj.pos(2) = surface_coordinate_to_hight(traj.pos(0), traj.pos(1), surface.para);
-
-        /* 2. velocity */
-        traj.vel.block<2,1>(0,0) = cdn->vel;
-        traj.vel(2) = surface.p_F_x * cdn->vel(0) + surface.p_F_y * cdn->vel(1);
-        traj.vb = traj.vel.norm();
-        if (cdn->vb < 0)
+        if (traj.constant_speed_enable != true)
         {
-            traj.vb *= -1.0f;
-        }
+            /* 1. postion */
+            traj.pos.block<2,1>(0,0) = cdn->pos;
+            traj.pos(2) = surface_coordinate_to_hight(traj.pos(0), traj.pos(1), surface.para);
 
-        /* 3. accleration */
-        traj.acc.block<2,1>(0,0) = cdn->acc;
-        traj.acc(2) = surface.p_F_x * cdn->acc(0) + surface.p_F_y * cdn->acc(1);
-        traj.ab = traj.acc.norm();
-        if (cdn->ab < 0)
+            /* 2. velocity */
+            traj.vel.block<2,1>(0,0) = cdn->vel;
+            traj.vel(2) = surface.p_F_x * cdn->vel(0) + surface.p_F_y * cdn->vel(1);
+            traj.vb = traj.vel.norm();
+            if (cdn->vb < 0)
+            {
+                traj.vb *= -1.0f;
+            }
+
+            /* 3. accleration */
+            traj.acc.block<2,1>(0,0) = cdn->acc;
+            traj.acc(2) = surface.p_F_x * cdn->acc(0) + surface.p_F_y * cdn->acc(1);
+            traj.ab = traj.acc.norm();
+            if (cdn->ab < 0)
+            {
+                traj.ab *= -1.0f;
+            }
+
+            /* 4. attitude */
+            traj.yaw = cdn->yaw;
+            traj.omega(2) = cdn->yaw_rate;
+        }
+        else
         {
-            traj.ab *= -1.0f;
+            /* 1. postion */
+            traj.pos.block<2,1>(0,0) = cdn->pos;
+            traj.pos(2) = surface_coordinate_to_hight(traj.pos(0), traj.pos(1), surface.para);
+
+            /* 2. velocity */
+            traj.vel.block<2,1>(0,0) = cdn->vel;
+            traj.vel(2) = surface.p_F_x * cdn->vel(0) + surface.p_F_y * cdn->vel(1);
+            v_norm = traj.vel.norm();
+            traj.vel *= (CONSTANT_SPEED / v_norm);
+            traj.vb = CONSTANT_SPEED;
+            if (cdn->vb < 0)
+            {
+                traj.vb *= -1.0f;
+            }
+
+            /* 3. accleration */  
+            /* constrains: (1). acc is vertical to vel (2). acc satisfies the surface equation (3). vel and acc on xy-plane satisfies the curvature on xy-plane */
+            w = surface.p_F_xx * traj.vel(0) * traj.vel(0) + 2.0f * surface.p_F_xy * traj.vel(0) * traj.vel(1) + surface.p_F_yy * traj.vel(1) * traj.vel(1);
+            tmp0 = traj.vel(0) * traj.vel(0) + traj.vel(1) * traj.vel(1);
+            if (fabs(traj.vel(0)) > EPSILON)
+            {
+                tmp1 = cdn->kp * powf(tmp0, 1.5f);
+                tmp2 = traj.vel(1) + traj.vel(2) * surface.p_F_y;
+                traj.acc(0) = (-tmp2*tmp1/traj.vel(0) - traj.vel(2)*w) / (traj.vel(0) + traj.vel(2)*surface.p_F_x + tmp2*traj.vel(1)/traj.vel(0));
+                traj.acc(1) = (tmp1 + traj.vel(1)*traj.acc(0)) / traj.vel(0);
+            }
+            else
+            {
+                traj.acc(0) = - cdn->kp * traj.vel(1) * traj.vel(1);
+                traj.acc(1) = - traj.vel(2) * (w + surface.p_F_x*traj.acc(0)) / (traj.vel(1) * surface.p_F_y);
+            }
+            traj.acc(2) = w + surface.p_F_x * traj.acc(0) + surface.p_F_y * traj.acc(1);
+            traj.ab = traj.acc.norm();
+            // todo: when ab < 0 ?
+
+            // cout << "surface partical: " << surface.p_F_x << ", " << surface.p_F_y << ", " << surface.p_F_xx << ", " << surface.p_F_xy << ", " << surface.p_F_yy << endl;
+            // cout << "curvature on plane: " << cdn->kp << endl;
+            // cout << "coordinate vel: " << cdn->vel.transpose() << endl;
+            // cout << "traj vel: " << traj.vel.transpose() << endl;
+            // cout << "traj acc: " << traj.acc.transpose() << endl;
+            // cout << "w: " << w << endl;
+            // cout << "tmp0: " << tmp0 << endl;
+            // cout << "tmp1: " << tmp1 << endl;
+            // cout << "tmp2: " << tmp2 << endl; 
+
+            /* 4. attitude */
+            traj.yaw = atan2(traj.vel(1), traj.vel(0)); // CONSTANT_SPEED != 0
+
+            /* 5. yaw rate */
+            traj.omega(2) = (traj.vel(0) * traj.acc(1) - traj.acc(0) * traj.vel(1)) / tmp0;
         }
-
-        /* 4. attitude */
-        surface.normal_vector << -surface.p_F_x, -surface.p_F_y, 1.0f;
-        surface.normal_vector.normalize();
-        Bx << 1.0f, 0.0f, surface.p_F_x;
-        Bx.normalize();
-        By << 0.0f, 1.0f, surface.p_F_y;
-        By.normalize();
-
-        traj.yaw = cdn->yaw;
-        traj.omega(2) = cdn->yaw_rate;
+        
     } 
 }
 
@@ -308,8 +434,17 @@ void MANIFOLD::surface_search_box_set(quadradic_surface_t &surface)
     surface.search_box.vertex_max[1] = surface.search_center(1) + SURFACE_SEARCH_RANGE_LEFT;
     surface.search_box.vertex_max[2] = surface.search_center(2) + SURFACE_SEARCH_RANGE_UP;
     surface.search_box.vertex_min[0] = surface.search_center(0) - SURFACE_SEARCH_RANGE_BACK;
-    surface.search_box.vertex_min[1] = surface.search_center(1) - SURFACE_SEARCH_RANGE_RIGHT;
-    surface.search_box.vertex_min[2] = surface.search_center(2) - SURFACE_SEARCH_RANGE_DOWN;
+    if (surface.surfaceValid == true)
+    {
+        surface.search_box.vertex_min[1] = surface.search_center(1) - SURFACE_SEARCH_RANGE_RIGHT;
+        surface.search_box.vertex_min[2] = surface.search_center(2) - SURFACE_SEARCH_RANGE_DOWN;
+    }
+    else
+    {
+        surface.search_box.vertex_min[1] = surface.search_center(1) - 2.0f * SURFACE_SEARCH_RANGE_RIGHT;
+        surface.search_box.vertex_min[2] = surface.search_center(2) - 2.0f * SURFACE_SEARCH_RANGE_DOWN;
+    }
+    
 }
 
 float MANIFOLD::surface_coordinate_to_hight(float x, float y, Matrix<float, 6, 1> &para)
@@ -322,24 +457,26 @@ float MANIFOLD::surface_coordinate_to_hight(float x, float y, Matrix<float, 6, 1
 void MANIFOLD::planning_on_manifold_init()
 {
     this->traj.init_en = true;
-    this->traj.mode = TRAJ_STAY;
+    this->traj.mode = TRAJ_MATCH;
+    this->traj.read_step = TRAJ_DATA_FS / TRAJ_OUPUT_FS;
     this->traj.read_cnt = 0;
     this->traj.pos_init = this->ekf_data.pos;
-
     this->traj.pos_init.setZero();
 
     this->surface.search_center = this->traj.pos_init;
     this->surface.search_center(2) -= LIDAR_MOUNT_HIGHT;
 
-    // for (int j = 0; j < 6; j++)
-    // {
-    //     math_butterworth_LPF_1st_config(1, 1.0f, 0.02f, this->surface.fltr[j]);
-    // }
+    for (int j = 0; j < 6; j++)
+    {
+        math_butterworth_LPF_1st_config(1, 0.5f, 0.02f, this->surface.fltr[j]);
+    }
 
     this->init_en = true;
 }
 
 int db_cnt = 0;
+float p_integ_db, v_integ_db;
+int test_axis = 0;
 void MANIFOLD::planning_on_manifold_main(KD_FOREST &ikdforest)
 {
     if (this->init_en != true)
@@ -383,7 +520,7 @@ void MANIFOLD::planning_on_manifold_main(KD_FOREST &ikdforest)
         //     cout << surface.neighbor_ponits[j].x << ", " << surface.neighbor_ponits[j].y << ", " << surface.neighbor_ponits[j].z << endl;
         // }
         
-        
+        cout << "surface valid: " << surface.surfaceValid << endl;
         cout << "ekf position: " << ekf_data.pos.transpose() << endl;
         cout << "search center: " << surface.search_center.transpose() << endl;
         // cout << "search box min: " << surface.search_box.vertex_min[0] << ", " << surface.search_box.vertex_min[1] << ", " << surface.search_box.vertex_min[2] << endl;
@@ -403,16 +540,35 @@ void MANIFOLD::planning_on_manifold_main(KD_FOREST &ikdforest)
 
     db_cnt ++;
     
-    // if (db_cnt < 0)
-    // {
-    //     cout << db_cnt << endl;
-    // }
-   
+    if (db_cnt == 1)
+    {
+        v_integ_db = traj.vel(test_axis);
+        p_integ_db = traj.pos(test_axis);
+    }
+    else
+    {
+        p_integ_db += traj.vel(test_axis) * TRAJ_TS;
+        // p_integ_db += v_integ_db * TRAJ_TS + 0.0f * traj.acc(test_axis) * TRAJ_TS * TRAJ_TS;
+        v_integ_db += traj.acc(test_axis) * TRAJ_TS;
+    }
+
+    float v_norm_db = traj.vel.norm();
+    
+    db_p.push_back(traj.pos(test_axis));  
+    db_p_integ.push_back(p_integ_db);
+    db_v.push_back(traj.vel(test_axis));  
+    db_v_integ.push_back(v_integ_db);
+    db_v_norm.push_back(v_norm_db);
+    db_time_stamp.push_back(db_cnt * TRAJ_TS);
 
     /* update next surface search center */
     this->surface.search_center(0) = traj_data[this->traj.read_cnt][0] + traj.pos_init(0);
     this->surface.search_center(1) = traj_data[this->traj.read_cnt][1] + traj.pos_init(1);
-    this->surface.search_center(2) = this->surface_coordinate_to_hight(this->surface.search_center(0), this->surface.search_center(1), this->surface.para);
+    if (surface.surfaceValid == true)
+    {
+        this->surface.search_center(2) = this->surface_coordinate_to_hight(this->surface.search_center(0), this->surface.search_center(1), this->surface.para);
+    }
+    
 
     // std::cout << "TRAJ POSITION: " << this->traj.pos.transpose() << endl;
     // std::cout << "EKF POSITION: " << this->ekf_data.pos.transpose() << endl;
